@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+#-*- coding:utf-8 -*-
+import os
+import datetime
+import time
+import re
+import pymysql
+import subprocess
+import smtplib
+from email.mime.text import MIMEText
+from email.header import Header
+from email.mime.multipart import MIMEMultipart
+#单个数据库的所有表空间查询函数
+def table_space(sql):
+	db=pymysql.connect("192.168.40.131","root","wxm19930522")	
+	cursor=db.cursor()  
+	cursor.execute(sql)  
+	results=cursor.fetchall()  
+	for row in results:  
+		table_name,data_size,index_size,total_size=[row[i] for i in range(4)]
+		total_size=re.sub(r'[a-zA-Z]','',total_size)
+		#表空间大小的阈值为2G
+		if float(total_size) >= 2048:
+			print('表:{}的表空间大小已经达到{}'.format(table_name,total_size+'MB'),file=doc)
+		else:
+			print ('表的名称:{}  表空间大小{}正常'.format(table_name,total_size+'MB'),file=doc)
+#数据库备份函数
+def beifen_database():
+	nowtime=time.strftime('%Y-%m-%d')
+	#这里要根据数据库的密码进行修改
+	result=subprocess.Popen("mysqldump -u root --password='wxm19930522' --all-databases >/root/mysql/all_database"+nowtime+".sql",shell=True,stdout=subprocess.PIPE)
+	for i in result.stdout.readlines():
+		i=i.decode('utf-8','ignore').strip()
+		#print(i)
+#对所有的数据库进行表空间查询
+def all_database(sql):	
+	db=pymysql.connect("192.168.40.131","root","wxm19930522","wxm")
+	cursor=db.cursor()
+	cursor.execute(sql)
+	results=cursor.fetchall()
+	for row in results:
+		database_list.append(row[0])
+	print('该数据库里面共有%s个数据库' % len(database_list),file=doc)
+	for i in database_list:
+		print('数据库如下所示:{}'.format(i),file=doc)
+#内存监控
+def memory_stat():
+    mem = {}
+    f = open('/proc/meminfo', 'r')
+    lines = f.readlines()
+    f.close()
+    for line in lines:
+        if len(line) < 2:
+            continue
+        name = line.split(':')[0]
+        var = line.split(':')[1].split()[0]
+        mem[name] = float(var)
+    mem['MemUsed'] = mem['MemTotal'] - mem['MemFree'] - mem['Buffers'] - mem['Cached']
+    #记录内存使用率 已使用 总内存和缓存大小
+    res = {}
+    res['percent'] = int(round(mem['MemUsed'] / mem['MemTotal'] * 100))
+    res['used'] = round(mem['MemUsed'] / (1024 * 1024), 2)
+    res['MemTotal'] = round(mem['MemTotal'] / (1024 * 1024), 2)
+    res['Buffers'] = round(mem['Buffers'] / (1024 * 1024), 2)
+    print('内存使用情况{}'.format(res))
+
+def load_stat():
+    loadavg = {}
+    f = open("/proc/loadavg")
+    con = f.read().split()
+    f.close()
+    loadavg['lavg_1']=con[0]
+    loadavg['lavg_5']=con[1]
+    loadavg['lavg_15']=con[2]
+    loadavg['nr']=con[3]
+
+
+    prosess_list = loadavg['nr'].split('/')
+    loadavg['running_prosess']=prosess_list[0]
+    loadavg['total_prosess']=prosess_list[1]
+
+    loadavg['last_pid']=con[4]
+
+    print('系统负载使用情况{}'.format(loadavg))
+
+def disk_stat():
+    hd={}
+    disk = os.statvfs('/')
+    hd['available'] = float(disk.f_bsize * disk.f_bavail)
+    hd['capacity'] = float(disk.f_bsize * disk.f_blocks)
+    hd['used'] = float((disk.f_blocks - disk.f_bfree) * disk.f_frsize)
+    res = {}
+    res['used'] = round(hd['used'] / (1024 * 1024 * 1024), 2)
+    res['capacity'] = round(hd['capacity'] / (1024 * 1024 * 1024), 2)
+    res['available'] = res['capacity'] - res['used']
+    res['percent'] = int(round(float(res['used']) / res['capacity'] * 100))
+    print('硬盘使用情况{}'.format(res))
+
+def IP():
+	result=subprocess.Popen('ifconfig',shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+	for i in result.stdout.readlines():
+		i=i.decode('utf-8','ignore').strip()
+		if i.__contains__('inet'):
+			print(i,file=doc)
+def boot_time():
+	result=subprocess.Popen('date "+%Y-%m-%d %H:%M:%S" -d "$(awk \'{print $1}\' /proc/uptime) second ago"',shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+	for i in result.stdout.readlines():
+		i=i.decode('utf-8','ignore').strip()
+		print('系统的上一次开机时间是:{}'.format(i),file=doc)
+def show_cpu():
+	result=subprocess.Popen('top -bn 1 -i -c',shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+	for i in result.stdout.readlines():
+		i=i.decode('utf-8','ignore').strip()
+		if i.__contains__('Cpu'):
+			i=i.split(':')[1].split(',')[3]
+			i=float(re.sub(r'[a-zA-Z]','',i))/100
+			i=(1-i)*100
+			i=str(round(i,2))+'%'
+			print('当前服务器的CPU利用率为 %s'% i,file=doc)
+def show_mem():
+	result=subprocess.Popen('free -m',shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)		
+	for i in result.stdout.readlines():
+		i=i.decode('utf-8','ignore').strip()
+		if i.__contains__('Mem'):
+			total_Mem,used_Mem=re.split(r'[\s]\s*',i)[1],re.split(r'[\s]\s*',i)[2]
+			mem_pencent=str(round(int(used_Mem)/int(total_Mem)*100,1))+'%'
+			print('物理内存:{} MB 使用率为 {}'.format(total_Mem,mem_pencent),file=doc)
+		if i.__contains__('Swap'):
+			total_swamp,used_swamp=re.split(r'[\s]\s*',i)[1],re.split(r'[\s]\s*',i)[2]
+			mem_pencent_swamp=str(round(int(used_swamp)/int(total_swamp)*100,1))+'%'
+			print('Swamp内存:{} MB 使用率为 {}'.format(total_swamp,mem_pencent_swamp),file=doc)	
+def show_nic(ethx):
+	result=subprocess.Popen('sar -n DEV 1 2',shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+	result.wait()
+	for i in result.stdout.readlines():
+		i=i.decode('utf-8','ignore').strip()
+		if i.__contains__('Average') and i.__contains__(ethx):
+			rec_pck,rec_kb=re.split(r'[\s]\s*',i)[2],re.split(r'[\s]\s*',i)[4]
+			print('网卡{}:当日的发送数据包的个数为{},当日的发送数据包的流量为{}KB'.format(ethx,float(rec_pck)*86400,float(rec_kb)*86400),file=doc)
+def show_disk():
+	result=subprocess.Popen('df -lh',shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+	result.wait()
+	for i in result.stdout.readlines():
+		i=i.decode('utf-8','ignore').strip()
+		a,b,c,d,e,f=re.split(r'[\s]\s*',i)[0:6]
+		print('文件系统:{:<14}硬盘大小:{:<14}已经使用:{:<14}还可使用:{:<14}使用率:{:<14}挂载点:{:<14}'.format(a,b,c,d,e,f),file=doc)
+
+def mail_to_admin(admin):
+	now_time1=time.strftime('%Y-%m-%d %H:%M:%S')
+	now_time=time.strftime('%Y-%m-%d')
+	#设置smtplib所需的参数
+	#下面的发件人，收件人是用于邮件传输的。
+	smtpserver = 'smtp.163.com'
+	username = '17551017364@163.com'
+	password='wxm19930522'
+	sender='17551017364@163.com'
+	#receiver='XXX@126.com'
+	#收件人为多个收件人
+	receiver=admin+'@qq.com'
+	#发送附件
+	subject = '服务器性能指标'+now_time1
+
+	#构造邮件对象MIMEMultipart对象
+	#下面的主题，发件人，收件人，日期是显示在邮件页面上的。
+	msg = MIMEMultipart('mixed') 
+	msg['Subject'] = subject
+	msg['From'] = '17551017364@163.com'
+	#msg['To'] = 'XXX@126.com'
+	#收件人为多个收件人,通过join将列表转换为以;为间隔的字符串
+	msg['To'] = receiver
+	msg['Date']=now_time
+	
+	sendfile=open(path,'rb').read()
+	text_att = MIMEText(sendfile, 'base64', 'utf-8') 
+	text_att["Content-Type"] = 'application/octet-stream'  
+	text_att.add_header('Content-Disposition', 'attachment', filename='server_information.txt')
+	msg.attach(text_att) 
+
+	#发送邮件
+	smtp = smtplib.SMTP()
+	smtp.connect('smtp.163.com')
+	#我们用set_debuglevel(1)就可以打印出和SMTP服务器交互的所有信息。
+	smtp.set_debuglevel(1)
+	smtp.login(username, password)
+	smtp.sendmail(sender, receiver, msg.as_string())
+	smtp.quit()
+
+def command(cmd):
+	result=subprocess.Popen('systemctl '+cmd+' status',shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+	result.wait()
+	for i in result.stdout.readlines():
+		i=i.decode('utf-8','ignore').strip()
+		if i.__contains__('dead'):
+			os.system('systemctl '+cmd+' restart')
+			mail_to_admin(service_dict.get(cmd))
+			print('{}服务已经重新启动'.format(cmd),file=doc)
+		else:
+			print('{}服务正常运行'.format(cmd),file=doc)
+			
+if __name__=='__main__':	
+	now_date=time.strftime('%Y-%m-%d %H:%M:%S')
+	path='/usr/mysql/'+now_date+'.log'
+	doc=open(path,'a')
+	database_list=[]
+	table_space("select TABLE_NAME, concat(truncate(data_length/1024/1024,2),' MB') as data_size,concat(truncate(index_length/1024/1024,2),' MB') as index_size,concat(truncate(data_length/1024/1024,2)+truncate(index_length/1024/1024,2),'MB') as total_size from information_schema.tables where TABLE_SCHEMA ='wxm' group by TABLE_NAME order by truncate(data_length/1024/1024,2)+truncate(index_length/1024/1024,2) desc LIMIT 100;")
+	#每天定时八点备份所有的数据库时间可以更改
+	target_time='8:00:00'
+	if time.strftime('%H:%M:%S') == target_time:
+		#beifen_database()
+		pass
+	all_database('show databases;')
+	#memory_stat()
+	#load_stat()
+	#disk_stat()
+	#IP()
+	boot_time()
+	show_cpu()
+	show_mem()
+	show_nic('ens33')
+	show_disk()
+	doc.close()
+	#需要发到的邮箱人的地址写到这里
+	mail_to_admin('1263684163')
+	#user分别对应各种应用的负责人
+	user=['1263684163','1263684532','1342462426']
+	service=['sshd','mysqld','httpd']
+	service_dict=dict(zip(service,user))
+	for i in service_dict.keys():
+		command(i)
+		
+	
